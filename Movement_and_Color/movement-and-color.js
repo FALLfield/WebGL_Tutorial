@@ -1,4 +1,14 @@
 "use strict";
+//Demo configuration constant
+const SPAWN_RATE = 0.08;
+const MIN_SHAPE_TIME = 0.25;
+const MAX_SHAPE_TIME = 6;
+const MIN_SHAPE_SPEED = 125;
+const MAX_SHAPE_SPEED = 350;
+const MIN_SHAPE_SIZE = 2;
+const MAX_SHAPE_SIZE = 50;
+const MAX_SHAPE_COUNT = 250;
+const SPWANER_CHANGE_TIME = 3;
 //Display an error message to the DOM, beneath the demo element
 function showError(erroText) {
     console.error(erroText);
@@ -11,7 +21,35 @@ function showError(erroText) {
     errorBoxDiv.appendChild(errorElement);
 }
 showError('This is what an error looks like!');
+const vertexShaderSourceCode = `#version 300 es
+    precision mediump float;
+    
+    in vec2 vertexPosition;
+    in vec3 vertexColor;
+
+    out vec3 fragmentColor;
+
+    uniform vec2 canvasSize;
+    uniform vec2 shapeLocation;
+    uniform float shapeSize;
+
+    void main(){
+        fragmentColor = vertexColor;
+        vec2 finalVertexPosition = vertexPosition * shapeSize + shapeLocation;
+        vec2 clipPosition = (finalVertexPosition / canvasSize) * 2.0 - 1.0;
+        gl_Position = vec4(clipPosition, 0.0, 1.0);
+    } `;
+const fragmentShaderSourceCode = `#version 300 es
+    precision mediump float;
+
+    in vec3 fragmentColor;
+    out vec4 outputColor;
+    
+    void main(){
+        outputColor = vec4(fragmentColor, 1.0);
+    }`;
 const trianglePositions = new Float32Array([0.0, 1.0, -1.0, -1.0, 1.0, -1.0,]);
+const squarePositions = new Float32Array([-1, 1, -1, -1, 1, -1, -1, 1, 1, -1, 1, 1]);
 const rgbTriangleColors = new Uint8Array([
     255, 0, 0,
     0, 255, 0,
@@ -22,6 +60,71 @@ const fireyTriangleColors = new Uint8Array([
     246, 206, 29,
     233, 154, 26,
 ]);
+const indigoGradientSquareColors = new Uint8Array([
+    167, 153, 255,
+    88, 62, 122,
+    88, 62, 122,
+    167, 153, 255,
+    88, 62, 122,
+    167, 153, 255,
+]);
+const graySquareColors = new Uint8Array([
+    45, 45, 45,
+    45, 45, 45,
+    45, 45, 45,
+    45, 45, 45,
+    45, 45, 45,
+    45, 45, 45,
+]);
+function createStaticVertexBuffer(gl, data) {
+    const buffer = gl.createBuffer();
+    if (!buffer) {
+        showError('Failed to allocate buffer');
+        return null;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    return buffer;
+}
+function createTwoBufferVAO(gl, positionBuffer, colorBuffer, positionAttribLocation, colorAttribLocation) {
+    const vao = gl.createVertexArray();
+    if (!vao) {
+        showError('Failed to allocate VAO for 2 buffers');
+        return null;
+    }
+    gl.bindVertexArray(vao);
+    gl.enableVertexAttribArray(positionAttribLocation);
+    gl.enableVertexAttribArray(colorAttribLocation);
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.vertexAttribPointer(positionAttribLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+    gl.vertexAttribPointer(colorAttribLocation, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+    return vao;
+}
+function getRandomInRange(min, max) {
+    return Math.random() * (max - min) + min;
+}
+class MovingShapde {
+    constructor(position, velocity, size, timeRemaining, vao, numVertices) {
+        this.position = position;
+        this.velocity = velocity;
+        this.size = size;
+        this.timeRemaining = timeRemaining;
+        this.vao = vao;
+        this.numVertices = numVertices;
+    }
+    isAlive() {
+        return this.timeRemaining > 0;
+    }
+    update(dt) {
+        this.position[0] += this.velocity[0] * dt;
+        this.position[1] += this.velocity[1] * dt;
+        this.timeRemaining -= dt;
+    }
+}
 function movementAndColor() {
     /** @type{HTMLCanvasElement|null}*/
     const canvas = document.getElementById('demo-canvas');
@@ -40,29 +143,21 @@ function movementAndColor() {
         }
         return;
     }
-    const triangleGeoBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, triangleGeoBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, trianglePositions, gl.STATIC_DRAW);
-    const fireyTriangleColorsBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, fireyTriangleColorsBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, fireyTriangleColors, gl.STATIC_DRAW);
-    const rgbTriangleColorsBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, rgbTriangleColorsBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, rgbTriangleColors, gl.STATIC_DRAW);
-    const vertexShaderSourceCode = `#version 300 es
-    precision mediump float;
-    
-    in vec2 vertexPosition;
-
-    uniform vec2 canvasSize;
-    uniform vec2 shapeLocation;
-    uniform float shapeSize;
-
-    void main(){
-        vec2 finalVertexPosition = vertexPosition * shapeSize + shapeLocation;
-        vec2 clipPosition = (finalVertexPosition / canvasSize) * 2.0 - 1.0;
-        gl_Position = vec4(clipPosition, 0.0, 1.0);
-    } `;
+    const triangleGeoBuffer = createStaticVertexBuffer(gl, trianglePositions);
+    const fireyTriangleColorsBuffer = createStaticVertexBuffer(gl, fireyTriangleColors);
+    const rgbTriangleColorsBuffer = createStaticVertexBuffer(gl, rgbTriangleColors);
+    const squareGeoBuffer = createStaticVertexBuffer(gl, squarePositions);
+    const indigoGradientSquareColorBuffer = createStaticVertexBuffer(gl, indigoGradientSquareColors);
+    const graySquareColorsBuffer = createStaticVertexBuffer(gl, graySquareColors);
+    if (!triangleGeoBuffer || !rgbTriangleColorsBuffer || !fireyTriangleColorsBuffer || !squareGeoBuffer || !indigoGradientSquareColorBuffer || !graySquareColorsBuffer) {
+        showError(`Failed to create 2 vertex buffers (triangle pos = ${!!triangleGeoBuffer},`
+            + ` ,rgb tri color = ${!!rgbTriangleColorsBuffer}`
+            + ` ,firey tri color = ${!!fireyTriangleColorsBuffer}`
+            + ` ,square pos = ${!!squareGeoBuffer}`
+            + ` ,indigo color = ${!!indigoGradientSquareColorBuffer}`
+            + ` ,gray s color = ${!!graySquareColorsBuffer})`);
+        return null;
+    }
     const vertexShader = gl.createShader(gl.VERTEX_SHADER);
     if (vertexShader === null) {
         showError("Could not allocate vertex shader");
@@ -75,13 +170,6 @@ function movementAndColor() {
         showError(`Failed to COMPILE vertex shader - ${compileError}`);
         return;
     }
-    const fragmentShaderSourceCode = `#version 300 es
-    precision mediump float;
-    out vec4 outputColor;
-    
-    void main(){
-        outputColor = vec4(0.298, 0.0, 0.51, 1.0);
-    }`;
     const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
     if (fragmentShader === null) {
         showError('Could not allocate fragment shader');
@@ -108,8 +196,9 @@ function movementAndColor() {
         return;
     }
     const vertexPositionAttribLocation = gl.getAttribLocation(triangleShaderProgram, 'vertexPosition');
-    if (vertexPositionAttribLocation < 0) {
-        showError('Failed to get attrib location for vertexPosition');
+    const vertexColorAttribLocation = gl.getAttribLocation(triangleShaderProgram, 'vertexColor');
+    if (vertexPositionAttribLocation < 0 || vertexColorAttribLocation < 0) {
+        showError(`Failed to get attrib locations: (pos=${vertexPositionAttribLocation},` + ` color = ${vertexColorAttribLocation})`);
         return;
     }
     const shapeLocationUniform = gl.getUniformLocation(triangleShaderProgram, 'shapeLocation');
@@ -119,40 +208,89 @@ function movementAndColor() {
         showError(`Failed to get uniform locations (shapeLocation = ${!!shapeLocationUniform}` + `, shapeSize = ${!!shapeSizeUniform}` + `canvasSize=${canvasSizeUniform}`);
         return;
     }
-    //Output merger - how to merge the shaded pixel fragment with the existing output image
-    canvas.width = canvas.clientWidth;
-    canvas.height = canvas.clientHeight;
-    gl.clearColor(0.08, 0.08, 0.08, 1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    //Rasterizer - which pixels are part of a triangle
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    //Vertex shader - how to place those vertices in clip space
-    //Fragment shader - what color a pixel should be 
-    gl.useProgram(triangleShaderProgram);
-    gl.enableVertexAttribArray(vertexPositionAttribLocation);
-    //Input assembler - how to read vertices from our GPU triangle buffer
-    gl.bindBuffer(gl.ARRAY_BUFFER, triangleGeoBuffer);
-    gl.vertexAttribPointer(
-    //index: which attribute to use
-    vertexPositionAttribLocation, 
-    //size:how many components in that attribute
-    2, 
-    //type:what is the data type stored in the GPU buffer for this attribute?
-    gl.FLOAT, 
-    //normallized: determines how to convert ints to floats, if that's what you're doing
-    false, 
-    //stride: how many bytes to move forward in the buffer to find the smae attribute for the next vertex
-    2 * Float32Array.BYTES_PER_ELEMENT, 
-    //offset: how many bytes should the input assembler skip into the buffer when readin attributes
-    0);
-    gl.uniform2f(canvasSizeUniform, canvas.width, canvas.height);
-    //Draw call (also configures primitive assembly)
-    gl.uniform1f(shapeSizeUniform, 200);
-    gl.uniform2f(shapeLocationUniform, 300, 400);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.uniform1f(shapeSizeUniform, 100);
-    gl.uniform2f(shapeLocationUniform, 650, 300);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    //Create VAO
+    const rgbTriangleVao = createTwoBufferVAO(gl, triangleGeoBuffer, rgbTriangleColorsBuffer, vertexPositionAttribLocation, vertexColorAttribLocation);
+    const fieryTriangleVao = createTwoBufferVAO(gl, triangleGeoBuffer, fireyTriangleColorsBuffer, vertexPositionAttribLocation, vertexColorAttribLocation);
+    const indigoSquareVao = createTwoBufferVAO(gl, squareGeoBuffer, indigoGradientSquareColorBuffer, vertexPositionAttribLocation, vertexColorAttribLocation);
+    const graySquareVao = createTwoBufferVAO(gl, squareGeoBuffer, graySquareColorsBuffer, vertexPositionAttribLocation, vertexColorAttribLocation);
+    if (!rgbTriangleVao || !fieryTriangleVao || !indigoSquareVao || !graySquareVao) {
+        showError(`Failed to create VAOs: (` + `rgb Triangle = ${!!rgbTriangleVao}`
+            + ` ,fiery Triangle = ${fieryTriangleVao}`
+            + ` ,indigo square = ${indigoSquareVao}`
+            + ` , gray square = ${graySquareVao})`);
+        return;
+    }
+    const geometryList = [
+        { vao: rgbTriangleVao, numVertices: 3 },
+        { vao: fieryTriangleVao, numVertices: 3 },
+        { vao: indigoSquareVao, numVertices: 6 },
+        { vao: graySquareVao, numVertices: 6 },
+    ];
+    let shapes = [];
+    let timeToNextSpawn = SPAWN_RATE;
+    let spawnPosition = [
+        getRandomInRange(canvas.width * 0.1, canvas.width * 0.9),
+        getRandomInRange(canvas.height * 0.1, canvas.height * 0.9),
+    ];
+    let timeToSpawnerChange = SPWANER_CHANGE_TIME;
+    let lastFrameTime = performance.now();
+    const frame = function () {
+        const thisFrameTime = performance.now();
+        const dt = (thisFrameTime - lastFrameTime) / 1000;
+        lastFrameTime = thisFrameTime;
+        //Update spawner
+        timeToSpawnerChange -= dt;
+        if (timeToSpawnerChange < 0) {
+            timeToSpawnerChange = SPWANER_CHANGE_TIME;
+            spawnPosition = [
+                getRandomInRange(canvas.width * 0.1, canvas.width * 0.9),
+                getRandomInRange(canvas.height * 0.1, canvas.height * 0.9),
+            ];
+        }
+        //Update shapes
+        timeToNextSpawn -= dt;
+        while (timeToNextSpawn < 0) {
+            timeToNextSpawn += SPAWN_RATE;
+            const movementAngle = getRandomInRange(0, 2 * Math.PI);
+            const movementSpeed = getRandomInRange(MIN_SHAPE_SPEED, MAX_SHAPE_SPEED);
+            const position = [spawnPosition[0], spawnPosition[1]];
+            const velocity = [
+                Math.sin(movementAngle) * movementSpeed,
+                Math.cos(movementAngle) * movementSpeed,
+            ];
+            const size = getRandomInRange(MIN_SHAPE_SIZE, MAX_SHAPE_SIZE);
+            const timeRemaining = getRandomInRange(MIN_SHAPE_TIME, MAX_SHAPE_TIME);
+            const geometryIndx = Math.floor(getRandomInRange(0, geometryList.length));
+            const geometry = geometryList[geometryIndx];
+            const shape = new MovingShapde(position, velocity, size, timeRemaining, geometry.vao, geometry.numVertices);
+            shapes.push(shape);
+        }
+        for (let i = 0; i < shapes.length; i++) {
+            shapes[i].update(dt);
+        }
+        shapes = shapes.filter((shape) => shape.isAlive()).slice(0, MAX_SHAPE_COUNT);
+        //Output merger - how to merge the shaded pixel fragment with the existing output image
+        canvas.width = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+        gl.clearColor(0.08, 0.08, 0.08, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        //Rasterizer - which pixels are part of a triangle
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        //Vertex shader - how to place those vertices in clip space
+        //Fragment shader - what color a pixel should be 
+        gl.useProgram(triangleShaderProgram);
+        gl.uniform2f(canvasSizeUniform, canvas.width, canvas.height);
+        for (let i = 0; i < shapes.length; i++) {
+            //Draw call (also configures primitive assembly)
+            //First triangle
+            gl.uniform1f(shapeSizeUniform, shapes[i].size);
+            gl.uniform2f(shapeLocationUniform, shapes[i].position[0], shapes[i].position[1]);
+            gl.bindVertexArray(shapes[i].vao);
+            gl.drawArrays(gl.TRIANGLES, 0, shapes[i].numVertices);
+        }
+        requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
 }
 try {
     movementAndColor();
